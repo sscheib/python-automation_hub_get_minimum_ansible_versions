@@ -4,11 +4,11 @@
 '''
   Description:
     This script interates through all Ansible Collections which are available from the Ansible Automation 
-    Hub (console.redhat.com) in both the validated content and the certified content and prints out those
-    collections which have been updated or released within the asked timespan (through --timedelta <days>).
+    Hub (console.redhat.com) in both the validated content and the certified content and prints out the
+    minimal required Ansible Core version for the latest available collection version.
 
-    It provides rudimentary options via a config.yml to only show updates on certain collections, repositories
-    and namespaces
+    Optionally, the data can be written to a spreadsheet (.xlsx).
+
 '''
 
 import requests
@@ -29,7 +29,7 @@ from pprint import pformat, pprint
 from packaging.version import Version, parse
 
 __author__ = 'Steffen Scheib'
-__copyright__ = 'Copyright 2023, Steffen Scheib'
+__copyright__ = 'Copyright 2025, Steffen Scheib'
 __credits__ = ['Steffen Scheib']
 __license__ = 'GPLv2 or later'
 __version__ = '0.2.0'
@@ -163,12 +163,19 @@ parser.add_argument('--api-username', dest='api_username',
 parser.add_argument('--api-password', dest='api_password',
                     help='Password for the user to authenticate against the API',
                     required=False)
-parser.add_argument('--timedelta', dest='timedelta', required=False, default='7',
-                    help='Days from today to report updated collections on', type=int)
-parser.add_argument('--config-file', dest='config_file', required=False, default='config.yml',
-                    help='Configuration file to load', type=str)
+parser.add_argument('--workbook-path', dest='workbook_path', default='/tmp/collections.xlsx',
+                    help='Path to store the workbook (xlsx)',
+                    required=False)
+parser.add_argument('--no-workbook', action='store_false', dest='write_workbook', default=True,
+                    help='Whether to write a workbook',
+                    required=False)
+parser.add_argument('--clear-workbook', action='store_true', dest='clear_workbook', default=True,
+                    help='Remove the workbook file on start',
+                    required=False)
+parser.add_argument('--ignore-authors', action='store_true', dest='ignore_authors', default=False,
+                    help='Add authors of the collection to the workbook',
+                    required=False)
 args = parser.parse_args()
-
 
 # set the log level
 LOG.setLevel(logging.INFO)
@@ -179,14 +186,6 @@ console_handler.setLevel(logging.INFO)
 console_formatter = logging.Formatter('[%(asctime)s] %(name)-12s %(levelname)-8s: %(funcName)-50s: %(message)s')
 console_handler.setFormatter(console_formatter)
 LOG.addHandler(console_handler)
-
-
-if os.path.isfile(args.config_file):
-  with open(args.config_file, 'r') as config:
-    cfg = yaml.safe_load(config)
-else:
-  LOG.info(f'Configuration file {args.config_file} not found, not using any configuration file')
-  cfg = None
 
 API_URL = args.api_url
 API_USERNAME = args.api_username
@@ -201,26 +200,32 @@ hrefs = {
   'certified': '/api/automation-hub/v3/plugin/ansible/content/published/collections/index/?limit=100'
 }
 
-workbook_path = '/tmp/workbook.xls'
+if args.write_workbook:
+    workbook_path = args.workbook_path
 
-try:
-    os.remove(workbook_path)
-except OSError as oserror_exception:
-    if oserror_exception.errno != errno.ENOENT: # errno.ENOENT = no such file or directory
-        raise
+    if args.clear_workbook:
+        try:
+            os.remove(workbook_path)
+        except OSError as oserror_exception:
+            if oserror_exception.errno != errno.ENOENT: # errno.ENOENT = no such file or directory
+                raise
 
-workbook = openpyxl.Workbook()
-worksheet = workbook.create_sheet('Collections Ansible versions')
-# create the header column for the worksheet
-worksheet.cell(column=1, row=1, value='Collection Name')
-worksheet.cell(column=2, row=1, value='Repository')
-worksheet.cell(column=3, row=1, value='Ansible Version')
-worksheet.cell(column=4, row=1, value='Downloads')
-worksheet.cell(column=5, row=1, value='Authors')
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.create_sheet('Collections Ansible versions')
+    # create the header column for the worksheet
+    worksheet.cell(column=1, row=1, value='Collection Name')
+    worksheet.cell(column=2, row=1, value='Repository')
+    worksheet.cell(column=3, row=1, value='Ansible Version')
+    worksheet.cell(column=4, row=1, value='Downloads')
 
+    if not args.ignore_authors:
+        worksheet.cell(column=5, row=1, value='Authors')
 
 ansible_versions = dict()
+
+# initial row accomodates for the header column
 row = 2
+
 # iterate over all repositories
 for collection_repo, initial_href in hrefs.items():
 
@@ -230,6 +235,7 @@ for collection_repo, initial_href in hrefs.items():
 
         # iterate over each collection
         for collection in result['data']:
+
             collection_name = collection['name']
             collection_namespace = collection['namespace']
             collection_fqcn = f'{collection_namespace}.{collection_name}'
@@ -255,11 +261,15 @@ for collection_repo, initial_href in hrefs.items():
                         }
                     ]
                 }
-            worksheet.cell(column=1, row=row, value=collection_fqcn)
-            worksheet.cell(column=2, row=row, value=collection_repo)
-            worksheet.cell(column=3, row=row, value=ansible_minor_version)
-            worksheet.cell(column=4, row=row, value=str(download_count))
-            worksheet.cell(column=5, row=row, value=str(authors))
+
+            if args.write_workbook:            
+                worksheet.cell(column=1, row=row, value=collection_fqcn)
+                worksheet.cell(column=2, row=row, value=collection_repo)
+                worksheet.cell(column=3, row=row, value=ansible_minor_version)
+                worksheet.cell(column=4, row=row, value=str(download_count))
+
+                if not args.ignore_authors:
+                    worksheet.cell(column=5, row=row, value=str(authors))
 
             pprint(f"collection {collection_fqcn} (#{download_count} downloads): -> {str(ansible_minor_version)}")
             row = row + 1
@@ -271,11 +281,11 @@ for collection_repo, initial_href in hrefs.items():
         # assign new href
         href = result['links']['next']
 
+if args.write_workbook:
+    # delete the initially created sheet
+    workbook.remove(workbook['Sheet'])
 
-# delete the initially created sheet
-workbook.remove(workbook['Sheet'])
-
-# save the workbook
-workbook.save(workbook_path)
+    # save the workbook
+    workbook.save(workbook_path)
 
 sys.exit(0)
